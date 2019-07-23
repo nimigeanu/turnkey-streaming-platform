@@ -1,0 +1,1419 @@
+Description: Turnkey Live Streaming Setup with Recording, VOD, ABR
+
+Resources:
+
+  MediaConvertRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-MediaConvertRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - "mediaconvert.amazonaws.com"
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      - arn:aws:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess
+
+  MediaLiveRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-MediaLiveRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - "medialive.amazonaws.com"
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess
+      Policies:
+        -
+          PolicyName: "MediaLiveCustomPolicy"
+          PolicyDocument:
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "s3:ListBucket"
+                  - "s3:PutObject"
+                  - "s3:GetObject"
+                  - "s3:DeleteObject"
+                Resource: "*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "mediastore:ListContainers"
+                  - "mediastore:PutObject"
+                  - "mediastore:GetObject"
+                  - "mediastore:DeleteObject"
+                  - "mediastore:DescribeObject"
+                Resource: "*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                  - "logs:DescribeLogStreams"
+                  - "logs:DescribeLogGroups"
+                Resource: "arn:aws:logs:*:*:*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "mediaconnect:ManagedDescribeFlow"
+                  - "mediaconnect:ManagedAddOutput"
+                  - "mediaconnect:ManagedRemoveOutput"
+                Resource: "*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "ec2:describeSubnets"
+                  - "ec2:describeNetworkInterfaces"
+                  - "ec2:createNetworkInterface"
+                  - "ec2:createNetworkInterfacePermission"
+                  - "ec2:deleteNetworkInterface"
+                  - "ec2:deleteNetworkInterfacePermission"
+                  - "ec2:describeSecurityGroups"
+                Resource: "*"
+              -
+                Effect: "Allow"
+                Action:
+                  - "mediapackage:DescribeChannel"
+
+                Resource: "*"
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-LambdaRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+      - arn:aws:iam::aws:policy/AWSElementalMediaConvertFullAccess
+      Policies:
+        -
+          PolicyName: !Sub "${AWS::StackName}-MediaLiveAccesss"
+          PolicyDocument:
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "medialive:StartChannel"
+                  - "medialive:StopChannel"
+                  - "medialive:ListChannels"
+                  - "medialive:DescribeChannel"
+                Resource: "*"
+        -
+          PolicyName: !Sub "${AWS::StackName}-LambdaRolePolicy"
+          PolicyDocument:
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !Join ["", ["arn:aws:iam::", Ref: "AWS::AccountId", ":role/*"]]
+              -
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Join ["", ["arn:aws:logs:", Ref: "AWS::Region", ":", Ref: "AWS::AccountId", ":log-group:/aws/lambda/*"]]
+              -
+                Effect: Allow
+                Action:
+                  - mediaconvert:DescribeEndpoints
+                  - mediaconvert:CreateJob
+                Resource:
+                  - !Join ["", ["arn:aws:mediaconvert:", Ref: "AWS::Region", ":", Ref: "AWS::AccountId", ":*"]]
+  
+  Container:
+    Type: AWS::MediaStore::Container
+    Properties: 
+      AccessLoggingEnabled: false
+      ContainerName: !Sub ${AWS::StackName}-Container
+      CorsPolicy: 
+        - AllowedHeaders: 
+            - "*"
+          AllowedMethods: 
+            - GET
+            - HEAD
+          AllowedOrigins: 
+            - "*"
+          MaxAgeSeconds: 3000
+      Policy: 
+        !Sub |
+          {
+            "Version" : "2012-10-17",
+            "Statement" : [ {
+              "Sid" : "MediaStoreFullAccess",
+              "Effect" : "Allow",
+              "Principal" : {
+                "AWS" : "arn:aws:iam::${AWS::AccountId}:root"
+              },
+              "Action" : "mediastore:*",
+              "Resource" : "arn:aws:mediastore:us-east-1:${AWS::AccountId}:container/${AWS::StackName}-Container/*",
+              "Condition" : {
+                "Bool" : {
+                  "aws:SecureTransport" : "true"
+                }
+              }
+            }, 
+            {
+              "Sid" : "PublicReadOverHttps",
+              "Effect" : "Allow",
+              "Principal" : "*",
+              "Action" : [ "mediastore:GetObject", "mediastore:DescribeObject" ],
+              "Resource" : "arn:aws:mediastore:us-east-1:${AWS::AccountId}:container/${AWS::StackName}-Container/*",
+              "Condition" : {
+                "Bool" : {
+                  "aws:SecureTransport" : "true"
+                }
+              }
+            } ]
+          }
+  
+  EventsTable: 
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      TableName: !Sub ${AWS::StackName}-Events
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: 
+        - 
+          AttributeName: "ID"
+          AttributeType: "S"
+        - 
+          AttributeName: "TranscodeJob"
+          AttributeType: "S"
+
+      KeySchema: 
+        - 
+          AttributeName: "ID"
+          KeyType: "HASH"
+      
+      GlobalSecondaryIndexes: 
+        - 
+          IndexName: "TranscodeJob-index"
+          KeySchema: 
+            - 
+              AttributeName: "TranscodeJob"
+              KeyType: "HASH"
+          Projection: 
+            ProjectionType: "ALL"
+
+  MediaConvertEndpointFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-MediaConvertEndPoint
+      Description: Finds and returns the MediaConvert endpoint 
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          var response = require('cfn-response');
+          const AWS = require('aws-sdk');
+
+          exports.handler = (event, context) => {
+            console.log('REQUEST:: ', JSON.stringify(event, null, 2));
+            const mediaconvert = new AWS.MediaConvert();
+            mediaconvert.describeEndpoints().promise()
+            .then((data) => {
+              var responseData = {
+                EndpointUrl: data.Endpoints[0].Url,
+              };
+              console.log("responseData: ", responseData);
+              response.send(event, context, response.SUCCESS, responseData);
+            })
+            .catch((err) => {
+              console.log('ERROR:: ', err, err.stack);
+              response.send(event, context, 'FAILED');
+            });
+          };
+
+      Runtime:  nodejs8.10
+      Timeout: 180
+
+  MediaConvertEndPoint:
+    Type: "Custom::LoadLambda"
+    Properties:
+      ServiceToken: !GetAtt MediaConvertEndpointFunction.Arn
+      Resource: "EndPoint"
+
+  StorageBucket:
+    DeletionPolicy: Retain
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${LowerCaseStackName.name}-storagebucket-${UniqueId.ID}
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [GET]
+            AllowedOrigins: ['*']
+            AllowedHeaders: ['Authorization', "Content-*", "Host"]
+            MaxAge: 3000
+      NotificationConfiguration:
+        LambdaConfigurations:
+        - 
+          Function: !GetAtt NewRecordingFunction.Arn
+          Event: 's3:ObjectCreated:*'
+          Filter:
+            S3Key:
+              Rules:
+              - 
+                Name: prefix
+                Value: recording
+              - 
+                Name: suffix
+                Value: .ts
+
+  StorageBucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref StorageBucket
+      PolicyDocument:
+        Statement:
+          -
+            Action:
+              - "s3:GetObject"
+            Effect: "Allow"
+            Resource: !Join ["", ["arn:aws:s3:::", Ref: "StorageBucket", "/*"]]
+            Principal:
+              CanonicalUser: !GetAtt StorageBucketOriginAccessIdentity.S3CanonicalUserId
+
+  MediaConvertJobTemplateFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-MediaConvertJobTemplate
+      Description: Creates and deletes the MediaConvert Job Template
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: 
+          !Sub |
+            var response = require('cfn-response');
+            const AWS = require('aws-sdk');
+
+            var createParams = {
+              "Name": "${AWS::StackName}-Template",
+              "Settings": {
+                "OutputGroups": [
+                  {
+                    "CustomName": "${AWS::StackName}-HLS",
+                    "Name": "Apple HLS",
+                    "Outputs": [
+                      {
+                        "Preset": "System-Avc_16x9_270p_14_99fps_400kbps",
+                        "NameModifier": "_240p"
+                      },
+                      {
+                        "Preset": "System-Avc_16x9_720p_29_97fps_3500kbps",
+                        "NameModifier": "_720p"
+                      }
+                    ],
+                    "OutputGroupSettings": {
+                      "Type": "HLS_GROUP_SETTINGS",
+                      "HlsGroupSettings": {
+                        "ManifestDurationFormat": "INTEGER",
+                        "SegmentLength": 10,
+                        "TimedMetadataId3Period": 10,
+                        "CaptionLanguageSetting": "OMIT",
+                        "Destination": "s3://${StorageBucket}/hls",
+                        "TimedMetadataId3Frame": "PRIV",
+                        "CodecSpecification": "RFC_4281",
+                        "OutputSelection": "MANIFESTS_AND_SEGMENTS",
+                        "ProgramDateTimePeriod": 600,
+                        "MinSegmentLength": 0,
+                        //"MinFinalSegmentLength": 0,
+                        "DirectoryStructure": "SINGLE_DIRECTORY",
+                        "ProgramDateTime": "EXCLUDE",
+                        "SegmentControl": "SEGMENTED_FILES",
+                        "ManifestCompression": "NONE",
+                        "ClientCache": "ENABLED",
+                        "StreamInfResolution": "INCLUDE"
+                      }
+                    }
+                  }
+                ],
+                "AdAvailOffset": 0,
+                "Inputs": [
+                  {
+                    "AudioSelectors": {
+                      "Audio Selector 1": {
+                        "Offset": 0,
+                        "DefaultSelection": "DEFAULT",
+                        "ProgramSelection": 1
+                      }
+                    },
+                    "VideoSelector": {
+                      "ColorSpace": "REC_601",
+                      //"Rotate": "DEGREE_0"
+                    },
+                    "FilterEnable": "AUTO",
+                    "PsiControl": "USE_PSI",
+                    "FilterStrength": 0,
+                    "DeblockFilter": "DISABLED",
+                    "DenoiseFilter": "DISABLED",
+                    "TimecodeSource": "EMBEDDED"
+                  }
+                ]
+              },
+              //"StatusUpdateInterval": "SECONDS_60"
+            }
+
+            var deleteParams = {
+              "Name": "${AWS::StackName}-Template"
+            }
+
+            exports.handler = (event, context) => {
+                console.log(event.RequestType);
+                var mediaconvert = new AWS.MediaConvert({endpoint: "${MediaConvertEndPoint.EndpointUrl}"});
+                var data;
+                switch (event.RequestType){
+                    case "Create":
+                        mediaconvert.createJobTemplate(createParams).promise()
+                        .then((data) => {
+                            console.log("success");
+                            console.log(data);           // successful response
+                            response.send(event, context, "SUCCESS", {});
+                        })
+                        .catch((err) => {
+                            console.log("failed");
+                            console.log(err, err.stack); // an error occurred
+                            response.send(event, context, 'FAILED');
+                        });
+                        break;
+                    case "Delete":
+                        mediaconvert.deleteJobTemplate(deleteParams).promise()
+                        .then((data) => {
+                            console.log(data);
+                            response.send(event, context, "SUCCESS", {});
+                        })
+                        .catch((err) => {
+                            console.log(err, err.stack); // an error occurred
+                            response.send(event, context, 'FAILED');
+                        });
+                        break;
+                    default:
+                        response.send(event, context, 'FAILED');
+                        break;
+                }
+                return data;
+            };
+      Runtime:  nodejs8.10
+      Timeout: 180
+
+  MediaConvertJobTemplate:
+    Type: "Custom::LoadLambda"
+    Properties:
+      ServiceToken: !GetAtt MediaConvertJobTemplateFunction.Arn
+      Resource: "EndPoint"
+
+  InputSecurityGroup:
+    Type: AWS::MediaLive::InputSecurityGroup
+    Properties: 
+      WhitelistRules: 
+        - Cidr: 0.0.0.0/0
+
+  Input:
+    Type: AWS::MediaLive::Input
+    Properties: 
+      Destinations: 
+        - StreamName: urbanstarburst/stream1
+        - StreamName: urbanstarburst/stream1
+      InputSecurityGroups: 
+        - !Ref InputSecurityGroup
+      Name: Input543152
+      Type: RTMP_PUSH
+
+  Channel:
+    Type: AWS::MediaLive::Channel
+    Properties: 
+      ChannelClass: SINGLE_PIPELINE
+      Destinations: 
+        - Id: dhmzan
+          Settings: 
+            -
+              Url: !Sub 
+                - mediastoressl://${domain}/A
+                - { domain : !Select [1, !Split ["//", !GetAtt Container.Endpoint]]}
+        - Id: nrbd6a
+          Settings: 
+            -
+              Url: !Sub s3ssl://${StorageBucket}/recording/A/video
+      EncoderSettings: 
+        AudioDescriptions:
+        - AudioTypeControl: FOLLOW_INPUT
+          LanguageCodeControl: FOLLOW_INPUT
+          Name: audio_rqntls
+        - AudioTypeControl: FOLLOW_INPUT
+          LanguageCodeControl: FOLLOW_INPUT
+          Name: audio_lhvrs
+        - AudioTypeControl: FOLLOW_INPUT
+          LanguageCodeControl: FOLLOW_INPUT
+          Name: audio_ibukha
+        CaptionDescriptions: []
+        OutputGroups:
+        - OutputGroupSettings:
+            HlsGroupSettings:
+              AdMarkers: []
+              CaptionLanguageSetting: OMIT
+              CaptionLanguageMappings: []
+              InputLossAction: EMIT_OUTPUT
+              ManifestCompression: NONE
+              Destination:
+                DestinationRefId: dhmzan
+              IvInManifest: INCLUDE
+              IvSource: FOLLOWS_SEGMENT_NUMBER
+              ClientCache: ENABLED
+              TsFileMode: SEGMENTED_FILES
+              ManifestDurationFormat: FLOATING_POINT
+              SegmentationMode: USE_SEGMENT_DURATION
+              RedundantManifest: DISABLED
+              OutputSelection: MANIFESTS_AND_SEGMENTS
+              StreamInfResolution: INCLUDE
+              IFrameOnlyPlaylists: DISABLED
+              IndexNSegments: 10
+              ProgramDateTime: EXCLUDE
+              ProgramDateTimePeriod: 600
+              KeepSegments: 21
+              SegmentLength: 10
+              TimedMetadataId3Frame: PRIV
+              TimedMetadataId3Period: 10
+              CodecSpecification: RFC_4281
+              DirectoryStructure: SINGLE_DIRECTORY
+              SegmentsPerSubdirectory: 10000
+              Mode: LIVE
+          Outputs:
+          - OutputSettings:
+              HlsOutputSettings:
+                NameModifier: _240p
+                HlsSettings:
+                  StandardHlsSettings:
+                    M3u8Settings:
+                      AudioFramesPerPes: 4
+                      AudioPids: 492-498
+                      PcrControl: PCR_EVERY_PES_PACKET
+                      PmtPid: '480'
+                      ProgramNum: 1
+                      Scte35Pid: '500'
+                      Scte35Behavior: NO_PASSTHROUGH
+                      TimedMetadataPid: '502'
+                      TimedMetadataBehavior: NO_PASSTHROUGH
+                      VideoPid: '481'
+                    AudioRenditionSets: program_audio
+            OutputName: khvlq7
+            VideoDescriptionName: video_7yy6ba
+            AudioDescriptionNames:
+            - audio_rqntls
+            CcaptionDescriptionNames: []
+          - OutputSettings:
+              HlsOutputSettings:
+                NameModifier: _720p
+                HlsSettings:
+                  StandardHlsSettings:
+                    M3u8Settings:
+                      AudioFramesPerPes: 4
+                      AudioPids: 492-498
+                      PcrControl: PCR_EVERY_PES_PACKET
+                      PmtPid: '480'
+                      ProgramNum: 1
+                      Scte35Pid: '500'
+                      Scte35Behavior: NO_PASSTHROUGH
+                      TimedMetadataPid: '502'
+                      TimedMetadataBehavior: NO_PASSTHROUGH
+                      VideoPid: '481'
+                    AudioRenditionSets: program_audio
+            OutputName: kywj4
+            VideoDescriptionName: video_eqpaw8
+            AudioDescriptionNames:
+            - audio_lhvrs
+            CaptionDescriptionNames: []
+        - OutputGroupSettings:
+            ArchiveGroupSettings:
+              Destination:
+                DestinationRefId: nrbd6a
+              RolloverInterval: 86400
+          Name: ''
+          Outputs:
+          - OutputSettings:
+              ArchiveOutputSettings:
+                NameModifier: _1
+                ContainerSettings:
+                  M2tsSettings:
+                    CcDescriptor: DISABLED
+                    Ebif: NONE
+                    ProgramNum: 1
+                    PatInterval: 100
+                    PmtInterval: 100
+                    PcrControl: PCR_EVERY_PES_PACKET
+                    PcrPeriod: 40
+                    TimedMetadataBehavior: NO_PASSTHROUGH
+                    BufferModel: MULTIPLEX
+                    RateMode: CBR
+                    AudioBufferModel: ATSC
+                    AudioStreamType: DVB
+                    AudioFramesPerPes: 2
+                    SegmentationStyle: MAINTAIN_CADENCE
+                    SegmentationMarkers: NONE
+                    EbpPlacement: VIDEO_AND_AUDIO_PIDS
+                    EbpAudioInterval: VIDEO_INTERVAL
+                    EsRateInPes: EXCLUDE
+                    Arib: DISABLED
+                    AribCaptionsPidControl: AUTO
+                    AbsentInputAudioBehavior: ENCODE_SILENCE
+                    PmtPid: '480'
+                    VideoPid: '481'
+                    AudioPids: 482-498
+                    DvbTeletextPid: '499'
+                    DvbSubPids: 460-479
+                    Scte27Pids: 450-459
+                    Scte35Pid: '500'
+                    Scte35Control: NONE
+                    Klv: NONE
+                    KlvDataPids: '501'
+                    TimedMetadataPid: '502'
+                    EtvPlatformPid: '504'
+                    EtvSignalPid: '505'
+                    AribCaptionsPid: '507'
+            OutputName: pdkga
+            VideoDescriptionName: video_ctk51m
+            AudioDescriptionNames:
+            - audio_ibukha
+            CaptionDescriptionNames: []
+        TimecodeConfig:
+          Source: EMBEDDED
+        VideoDescriptions:
+        - CodecSettings:
+            H264Settings:
+              AfdSignaling: NONE
+              ColorMetadata: INSERT
+              AdaptiveQuantization: MEDIUM
+              Bitrate: 500000
+              EntropyEncoding: CABAC
+              FlickerAq: ENABLED
+              FramerateControl: INITIALIZE_FROM_SOURCE
+              GopBReference: DISABLED
+              GopClosedCadence: 1
+              GopNumBFrames: 2
+              GopSize: 90
+              GopSizeUnits: FRAMES
+              SubgopLength: FIXED
+              ScanType: PROGRESSIVE
+              Level: H264_LEVEL_AUTO
+              LookAheadRateControl: MEDIUM
+              NumRefFrames: 1
+              ParControl: INITIALIZE_FROM_SOURCE
+              Profile: MAIN
+              RateControlMode: CBR
+              Syntax: DEFAULT
+              SceneChangeDetect: ENABLED
+              SpatialAq: ENABLED
+              TemporalAq: ENABLED
+              TimecodeInsertion: DISABLED
+          Height: 180
+          Name: video_7yy6ba
+          RespondToAfd: NONE
+          Sharpness: 50
+          ScalingBehavior: DEFAULT
+          Width: 320
+        - CodecSettings:
+            H264Settings:
+              AfdSignaling: NONE
+              ColorMetadata: INSERT
+              AdaptiveQuantization: MEDIUM
+              Bitrate: 3000000
+              EntropyEncoding: CABAC
+              FlickerAq: ENABLED
+              FramerateControl: INITIALIZE_FROM_SOURCE
+              GopBReference: DISABLED
+              GopClosedCadence: 1
+              GopNumBFrames: 2
+              GopSize: 90
+              GopSizeUnits: FRAMES
+              SubgopLength: FIXED
+              ScanType: PROGRESSIVE
+              Level: H264_LEVEL_AUTO
+              LookAheadRateControl: MEDIUM
+              NumRefFrames: 1
+              ParControl: INITIALIZE_FROM_SOURCE
+              Profile: MAIN
+              RateControlMode: CBR
+              Syntax: DEFAULT
+              SceneChangeDetect: ENABLED
+              SpatialAq: ENABLED
+              TemporalAq: ENABLED
+              TimecodeInsertion: DISABLED
+          Height: 720
+          Name: video_eqpaw8
+          RespondToAfd: NONE
+          Sharpness: 50
+          ScalingBehavior: DEFAULT
+          Width: 1280
+        - Name: video_ctk51m
+          RespondToAfd: NONE
+          Sharpness: 50
+          ScalingBehavior: DEFAULT
+      InputAttachments: 
+        - InputAttachmentName: !Sub ${AWS::StackName}-Attachment
+          InputId: !Ref Input
+      #    InputSettings: 
+      #      InputSettings
+      #InputSpecification: 
+      #  InputSpecification
+      #LogLevel: String
+      Name: !Sub ${AWS::StackName}-Channel
+      RoleArn: !GetAtt MediaLiveRole.Arn
+
+  BucketPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref NewRecordingFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref "AWS::AccountId"
+      SourceArn: !Sub arn:aws:s3:::${LowerCaseStackName.name}-storagebucket-${UniqueId.ID}
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref FinishedTranscodingFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      #SourceAccount: !Ref "AWS::AccountId"
+      SourceArn: !GetAtt EncodeCompleteRule.Arn
+
+  LiveEventFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-LiveEvent
+      Description: executes when `start` and `stop` are called via API
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const dynamo = new AWS.DynamoDB.DocumentClient();
+          const doc = require('dynamodb-doc');
+          const ddb = new doc.DynamoDB();
+
+
+          exports.handler = (event, context, callback) => {
+              
+              const done = (err, res) => callback(null, {
+                  statusCode: err ? '400' : '200',
+                  body: err ? err.message : JSON.stringify(res),
+                  headers: {
+                      'Content-Type': 'application/json',
+                       'Access-Control-Allow-Origin' : '*'
+                  },
+              });
+              
+              var medialive = new AWS.MediaLive();
+              var params = {
+                  ChannelId: process.env.MEDIALIVE_CHANNEL_ID
+              };
+              
+              if (event.path.match(/.*events\/start/)){
+                  var metadata = "undefined";
+                  if (event.queryStringParameters){
+                      if (event.queryStringParameters.metadata){
+                          metadata = event.queryStringParameters.metadata;
+                      }
+                  }
+                  setupEvent(metadata, done);
+              }
+              else if (event.path.match(/.*events\/stop/)){
+                  medialive.stopChannel(params, done);
+              }
+          };
+
+          function startChannel(callback){
+              var medialive = new AWS.MediaLive();
+              var params = {
+                  ChannelId: process.env.MEDIALIVE_CHANNEL_ID
+              };
+              medialive.startChannel(params, callback);
+          }
+
+          function setupEvent(metadata, callback){
+            var params = {
+              TableName : process.env.DYNAMODB_EVENTS_TABLE,
+              IndexName: "TranscodeJob-index",
+              KeyConditionExpression: "#tj = :tid",
+              ExpressionAttributeNames:{
+                  "#tj": "TranscodeJob"
+              },
+              ExpressionAttributeValues: {
+                  ":tid": "-1"
+              }
+            };
+            
+            dynamo.query(params, function(err, data) {
+                if (err) {
+                    console.error("Unable to query. Error:", JSON.stringify(err, null, 2));
+                } else {
+                    console.log("Query succeeded.");
+                    console.log(data);
+                    if (data.Count > 0){
+                        let id = data.Items[0].ID;
+                        console.log("Id: " + id);
+                        updateItem(id, metadata, callback)
+                    }
+                    else {
+                        insertItem(metadata, callback)
+                    }
+                }
+            });
+          }
+
+          function insertItem(metadata, callback){
+              console.log("insertItem: " + metadata)
+              let timestamp = new Date().getTime().toString();
+              let item = {
+              "TableName": process.env.DYNAMODB_EVENTS_TABLE,
+              "Item": {
+                  "ID": timestamp,
+                  "TranscodeJob": "-1",
+                  "TranscodeStatus": 'recording',
+                  "Time": new Date().toGMTString(), 
+                  "metadata": metadata
+              }
+            }
+            ddb.putItem(item, function (err, data) {
+              if (err) {
+                  console.log("Error adding item to DB" );
+                  console.log(err, err.stack); // an error occurred
+              } else {
+                startChannel(callback)
+              }
+            });
+          }
+
+          function updateItem(id, metadata, callback){
+            console.log("updateItem: " + metadata)
+            var params = {
+              TableName:process.env.DYNAMODB_EVENTS_TABLE,
+              
+              Key: {
+                "ID": id
+              },
+              
+              UpdateExpression: "set metadata = :metadata",
+              ExpressionAttributeValues: {
+                  ":metadata": metadata
+              },
+              ReturnValues:"UPDATED_NEW"
+            };
+            
+            dynamo.update(params, function(err, data) {
+              if (err) {
+                  console.error("Unable to update item. Error JSON:", JSON.stringify(err, null, 2));
+                  callback(err);
+              } else {
+                  console.log("UpdateItem succeeded:", JSON.stringify(data, null, 2));
+                  startChannel(callback);
+              }
+            });
+          }
+      Environment:
+        Variables:
+          MEDIALIVE_CHANNEL_ID: !Select [6, !Split [":", !GetAtt Channel.Arn]]
+          DYNAMODB_EVENTS_TABLE : !Sub ${AWS::StackName}-Events
+      Runtime:  nodejs8.10
+      Timeout: 180
+
+  GetEventsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetEvents
+      Description: executes when `events` is called via API
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const doc = require('dynamodb-doc');
+          const dynamo = new doc.DynamoDB();
+
+
+
+          exports.handler = (event, context, callback) => {
+              const done = (err, res) => callback(null, {
+                  statusCode: err ? '400' : '200',
+                  body: err ? err.message : JSON.stringify(res),
+                  headers: {
+                      'Content-Type': 'application/json',
+                  },
+              });
+
+              dynamo.scan({ TableName: process.env.DYNAMODB_EVENTS_TABLE }, done);
+          };
+          
+      Environment:
+        Variables:
+          DYNAMODB_EVENTS_TABLE : !Sub ${AWS::StackName}-Events
+      Runtime:  nodejs8.10
+      Timeout: 180
+
+  NewRecordingFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-NewRecording
+      Description: executes when a new recording is stored in S3 (upon finishing an event)
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          const AWS=require("aws-sdk"),dynamo=new AWS.DynamoDB.DocumentClient,doc=require("dynamodb-doc"),ddb=new doc.DynamoDB,MEDIA_CONVERT_ENDPOINT=process.env.MEDIA_CONVERT_ENDPOINT,MEDIA_CONVERT_ROLE_ARN=process.env.MEDIA_CONVERT_ROLE_ARN,JOB_TEMPLATE=process.env.JOB_TEMPLATE,OUTPUT_LOCATION=process.env.OUTPUT_LOCATION,DYNAMODB_EVENTS_TABLE=process.env.DYNAMODB_EVENTS_TABLE,mediaConvert=new AWS.MediaConvert({endpoint:MEDIA_CONVERT_ENDPOINT});exports.handler=function(a,b,c){const d=a.Records[0].s3.bucket.name,e=decodeURIComponent(a.Records[0].s3.object.key.replace(/\+/g," "));var f={TableName:process.env.DYNAMODB_EVENTS_TABLE,IndexName:"TranscodeJob-index",KeyConditionExpression:"#tj = :tid",ExpressionAttributeNames:{"#tj":"TranscodeJob"},ExpressionAttributeValues:{":tid":"-1"}};dynamo.query(f,function(a,b){if(a)console.error("Unable to query. Error:",JSON.stringify(a,null,2));else if(console.log("Query succeeded."),console.log(b),0<b.Count){let a=b.Items[0].ID;console.log("Id: "+a),moveFile(d,e,a,c)}})};function moveFile(a,b,c,d){console.log("moveFile: "+a+"  "+b);const e=`s3://${a}/${b}`;console.log("fileInput: "+e);var f=new AWS.S3;let g=b.replace(/recording\//,""),h=`archive/${g}`;h=h.replace(/video_1.[0-9]+.ts/,`event_${c}.ts`),console.log("simpleKey: "+g),console.log("copyDestination: "+h),f.copyObject({Bucket:a,Key:h,CopySource:encodeURIComponent(a+"/"+b),MetadataDirective:"COPY"},function(c){c?(console.log("Error copying"),console.log(c,c.stack),d(`Error copying '${e}' to '${h}`)):(console.log("copied"),f.deleteObject({Bucket:a,Key:b},function(b){b?console.log(b,b.stack):(console.log("deleted"),launchTranscoder(`s3://${a}/${h}`,d))}))})}function launchTranscoder(a,b){console.log("launchTranscoder: "+a);const c={JobTemplate:JOB_TEMPLATE,Role:MEDIA_CONVERT_ROLE_ARN,Settings:{Inputs:[{FileInput:a}]}};let d=a.match(/archive\/([A-Z]\/event_([0-9]+)).ts/);console.log("fileName: "+d),console.log("fileName0: "+d[0]),console.log("fileName1: "+d[1]);let e=`s3://${OUTPUT_LOCATION}/${d[1]}`;console.log("output: "+e),c.Settings.OutputGroups=[{Outputs:[],OutputGroupSettings:{Type:"HLS_GROUP_SETTINGS",HlsGroupSettings:{SegmentLength:10,MinSegmentLength:0,Destination:e}}}],mediaConvert.createJob(c).promise().then(a=>{console.log("Transcode job created."),console.log(a);let c=a.Job.Id;console.log("jobId: "+c),setupDatabase(d[2],c,b)}).catch(c=>{let d=`Unable to transcode input at ${a} due to an error: ${c}`;console.error(d),b(null,d)})}function setupDatabase(a,b,c){console.log("setupDatabase: "+a);var d={TableName:process.env.DYNAMODB_EVENTS_TABLE,Key:{ID:a},UpdateExpression:"set TranscodeJob = :transcodejob, TranscodeStatus = :trasnscodestatus",ExpressionAttributeValues:{":transcodejob":b,":trasnscodestatus":"processing"},ReturnValues:"UPDATED_NEW"};dynamo.update(d,function(a,b){a?(console.error("Unable to update item. Error JSON:",JSON.stringify(a,null,2)),c(a)):(console.log("UpdateItem succeeded:",JSON.stringify(b,null,2)),c(null,b))})}
+      Environment:
+        Variables:
+          DYNAMODB_EVENTS_TABLE: !Sub ${AWS::StackName}-Events
+          JOB_TEMPLATE: !Sub ${AWS::StackName}-Template
+          MEDIA_CONVERT_ENDPOINT: !GetAtt MediaConvertEndPoint.EndpointUrl
+          MEDIA_CONVERT_ROLE_ARN: !GetAtt MediaConvertRole.Arn
+          OUTPUT_LOCATION: !Sub ${LowerCaseStackName.name}-storagebucket-${UniqueId.ID}/hls
+      Runtime:  nodejs8.10
+      Timeout: 180
+
+  FinishedTranscodingFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-FinishedTranscoding
+      Description: executes when MediaConvert fihishes transcoding an event
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          var AWS = require("aws-sdk");
+          const dynamo = new AWS.DynamoDB.DocumentClient();
+
+          console.log("dynamo: " + dynamo)
+
+          exports.handler = function(event, context, callback) {
+            let jobId = event.detail.jobId;
+            console.log("jobId: " + jobId);
+            let status = event.detail.status;
+            
+            var params = {
+              TableName : process.env.DYNAMODB_EVENTS_TABLE,
+              IndexName: "TranscodeJob-index",
+              KeyConditionExpression: "#tj = :tid",
+              ExpressionAttributeNames:{
+                  "#tj": "TranscodeJob"
+              },
+              ExpressionAttributeValues: {
+                  ":tid": jobId
+              }
+            };
+            
+            dynamo.query(params, function(err, data) {
+                if (err) {
+                    console.error("Unable to query. Error:", JSON.stringify(err, null, 2));
+                } else {
+                    console.log("Query succeeded.");
+                    console.log(data);
+                    updateStatus(data.Items[0].ID, status, callback)
+                }
+            });
+          }
+
+          function updateStatus(id, status, callback){
+            console.log("updateStatus: " + id);
+            var params = {
+              TableName:process.env.DYNAMODB_EVENTS_TABLE,
+              
+              Key: {
+                "ID": id
+              },
+              
+              UpdateExpression: "set TranscodeStatus = :status",
+              ExpressionAttributeValues: {
+                  ":status": status.toLowerCase()
+              },
+              ReturnValues:"UPDATED_NEW"
+            };
+            
+            dynamo.update(params, function(err, data) {
+              if (err) {
+                  console.error("Unable to update item. Error JSON:", JSON.stringify(err, null, 2));
+                  callback(err);
+              } else {
+                  console.log("UpdateItem succeeded:", JSON.stringify(data, null, 2));
+                  
+                  callback(null, data)
+              }
+            });
+          };
+
+          
+      Environment:
+        Variables:
+          DYNAMODB_EVENTS_TABLE : !Sub ${AWS::StackName}-Events
+      Runtime:  nodejs8.10
+      Timeout: 180
+
+  DeleteEventFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-DeleteEvent
+      Description: executes upon an API call to delete an event
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const doc = require('dynamodb-doc');
+          var dynamo = new AWS.DynamoDB.DocumentClient();
+          const s3 = new AWS.S3();
+
+          exports.handler = function(event, context, callback) {
+            
+            const done = (err, res) => callback(null, {
+              statusCode: err ? '400' : '200',
+              body: err ? err.message : JSON.stringify(res),
+              headers: {
+                'Content-Type': 'application/json',
+                 'Access-Control-Allow-Origin' : '*'
+              },
+            });
+            
+            let eventId = event.pathParameters.eventId;
+            console.log("env: ", process.env)
+            console.log("eventId: ", eventId);
+            deleteFiles(eventId, done);
+          };
+
+
+          function deleteFiles(eventId, callback){
+            console.log("deleteFiles: " + eventId)
+            
+            var deleteParams = {Bucket: process.env.S3_BUCKET};
+            deleteParams.Delete = {Objects:[]};
+              
+            s3.listObjects({Bucket: process.env.S3_BUCKET, Prefix: 'hls/A/event_' + eventId}, function(err, data) {
+              if (err) return callback(err);
+              console.log("data: ", data)
+              //if (data.Contents.length == 0) callback();
+                data.Contents.forEach(function(content) {
+                deleteParams.Delete.Objects.push({Key: content.Key});
+              });
+              s3.listObjects({Bucket: process.env.S3_BUCKET, Prefix: 'archive/A/event_' + eventId}, function(err, data) {
+                if (err) return callback(err);
+                console.log("data: ", data)
+                //if (data.Contents.length == 0) callback();
+                
+                data.Contents.forEach(function(content) {
+                  deleteParams.Delete.Objects.push({Key: content.Key});
+                });
+                console.log("deleteParams: ", deleteParams)
+                if (deleteParams.Delete.Objects.length > 0){
+                  s3.deleteObjects(deleteParams, function(err, data) {
+                    if (err) return callback(err);
+                    //if(data.Contents.length == 1000)emptyBucket(bucketName,callback);
+                    else deleteRecord(eventId, callback)
+                  });
+                }
+                else deleteRecord(eventId, callback);
+              });
+            });
+          }
+
+          function deleteRecord(eventId, callback){
+            console.log("deleteRecord: " + eventId);
+            var params = {
+              TableName:process.env.DYNAMODB_EVENTS_TABLE,
+              "Key" : {
+                  "ID": eventId
+              }
+            };
+            
+            console.log("Attempting a conditional delete: ", params);
+            dynamo.delete(params, callback);
+          }
+          
+      Environment:
+        Variables:
+          DYNAMODB_EVENTS_TABLE : !Sub ${AWS::StackName}-Events
+          S3_BUCKET: !Sub ${LowerCaseStackName.name}-storagebucket-${UniqueId.ID}
+      Runtime:  nodejs8.10
+      Timeout: 180
+
+  LambdaApiGatewayInvoke1:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt GetEventsFunction.Arn
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/GET/events"
+
+  LambdaApiGatewayInvoke2:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt LiveEventFunction.Arn
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/GET/events/start"
+
+  LambdaApiGatewayInvoke3:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt LiveEventFunction.Arn
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/GET/events/stop"
+
+  LambdaApiGatewayInvoke4:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt DeleteEventFunction.Arn
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/DELETE/events/{eventId}"
+
+
+  ApiGateway:
+    Type: "AWS::ApiGateway::RestApi"
+    Properties:
+      Name: !Sub ${AWS::StackName}-API
+      Description: "The API"
+      Policy:
+        !Sub |
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": "*",
+                    "Action": "execute-api:Invoke",
+                    "Resource": "arn:aws:execute-api:us-east-1:${AWS::AccountId}:*/*/*/*",
+                    "Condition": {
+                        "IpAddress": {
+                            "aws:SourceIp": [
+                                "0.0.0.0/0",
+                                "1.2.3.4"
+                            ]
+                        }
+                    }
+                }
+            ]
+          }
+
+  ApiEventsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: 'events'
+      RestApiId: !Ref ApiGateway
+
+  ApiGetEventsMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: "NONE"
+      HttpMethod: "GET"
+      Integration:
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations"
+          - lambdaArn: !GetAtt "GetEventsFunction.Arn"
+      ResourceId: !Ref ApiEventsResource
+      RestApiId: !Ref "ApiGateway"
+
+  ApiEventsStartResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref ApiEventsResource
+      PathPart: 'start'
+      RestApiId: !Ref ApiGateway
+
+  ApiStartEventMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: "NONE"
+      HttpMethod: "GET"
+      Integration:
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations"
+          - lambdaArn: !GetAtt "LiveEventFunction.Arn"
+      ResourceId: !Ref ApiEventsStartResource
+      RestApiId: !Ref "ApiGateway"
+
+  ApiEventsStopResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref ApiEventsResource
+      PathPart: 'stop'
+      RestApiId: !Ref ApiGateway
+
+  ApiStopEventMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: "NONE"
+      HttpMethod: "GET"
+      Integration:
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations"
+          - lambdaArn: !GetAtt "LiveEventFunction.Arn"
+      ResourceId: !Ref ApiEventsStopResource
+      RestApiId: !Ref "ApiGateway"
+
+  ApiEventsEventIdResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref ApiEventsResource
+      PathPart: '{eventId}'
+      RestApiId: !Ref ApiGateway
+
+  ApiDeleteEventMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: "NONE"
+      HttpMethod: "DELETE"
+      Integration:
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations"
+          - lambdaArn: !GetAtt "DeleteEventFunction.Arn"
+      ResourceId: !Ref ApiEventsEventIdResource
+      RestApiId: !Ref "ApiGateway"
+
+  ApiGatewayDeployment:
+    Type: "AWS::ApiGateway::Deployment"
+    DependsOn:
+      - ApiGetEventsMethod
+      - ApiStartEventMethod
+      - ApiStopEventMethod
+      - ApiDeleteEventMethod
+    Properties:
+      RestApiId: !Ref "ApiGateway"
+      StageName: urbanstarburst
+
+  EncodeCompleteRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub ${AWS::StackName}-EncodeComplete
+      Description: MediaConvert Completed jobs event rule
+      EventPattern:
+        source:
+          - aws.mediaconvert
+        detail:
+          status:
+            - COMPLETE
+            - ERROR
+      Targets:
+        -
+          Arn: 
+            !GetAtt FinishedTranscodingFunction.Arn
+          Id: !Sub ${AWS::StackName}-EncodeComplete
+
+  StorageBucketOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub "access-identity-${StorageBucket}"
+
+  VodCDN:
+    Type: "AWS::CloudFront::Distribution"
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !Sub "${StorageBucket}.s3.${AWS::Region}.amazonaws.com"
+            OriginPath: /hls
+            Id: defaultS3Origin
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${StorageBucketOriginAccessIdentity}"
+        Enabled: 'true'
+        DefaultCacheBehavior:
+          AllowedMethods:
+          - GET
+          - HEAD
+          - OPTIONS
+          TargetOriginId: defaultS3Origin
+          ForwardedValues:
+            QueryString: 'false'
+            Cookies:
+              Forward: none
+            Headers:
+              - Origin
+              - Access-Control-Request-Method
+              - Access-Control-Request-Headers
+          ViewerProtocolPolicy: allow-all
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: 'true'
+
+  Container:
+    Type: AWS::MediaStore::Container
+    Properties: 
+      AccessLoggingEnabled: false
+      ContainerName: !Sub ${AWS::StackName}-Container
+      CorsPolicy: 
+        - AllowedHeaders: 
+            - "*"
+          AllowedMethods: 
+            - GET
+            - HEAD
+          AllowedOrigins: 
+            - "*"
+          MaxAgeSeconds: 3000
+      Policy: 
+        !Sub |
+          {
+            "Version" : "2012-10-17",
+            "Statement" : [ {
+              "Sid" : "MediaStoreFullAccess",
+              "Effect" : "Allow",
+              "Principal" : {
+                "AWS" : "arn:aws:iam::${AWS::AccountId}:root"
+              },
+              "Action" : "mediastore:*",
+              "Resource" : "arn:aws:mediastore:us-east-1:${AWS::AccountId}:container/${AWS::StackName}-Container/*",
+              "Condition" : {
+                "Bool" : {
+                  "aws:SecureTransport" : "true"
+                }
+              }
+            }, 
+            {
+              "Sid" : "PublicReadOverHttps",
+              "Effect" : "Allow",
+              "Principal" : "*",
+              "Action" : [ "mediastore:GetObject", "mediastore:DescribeObject" ],
+              "Resource" : "arn:aws:mediastore:us-east-1:${AWS::AccountId}:container/${AWS::StackName}-Container/*",
+              "Condition" : {
+                "Bool" : {
+                  "aws:SecureTransport" : "true"
+                }
+              }
+            } ]
+          }
+
+  LiveCDN:
+    Type: "AWS::CloudFront::Distribution"
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !Select [1, !Split ["//", !GetAtt Container.Endpoint]]
+            #OriginPath: /hls
+            Id: defaultS3Origin
+            CustomOriginConfig:
+              #HTTPPort: '80'
+              #HTTPSPort: '443'
+              OriginProtocolPolicy: https-only
+        Enabled: 'true'
+        DefaultCacheBehavior:
+          AllowedMethods:
+          - GET
+          - HEAD
+          - OPTIONS
+          TargetOriginId: defaultS3Origin
+          ForwardedValues:
+            QueryString: 'false'
+            Cookies:
+              Forward: none
+            Headers:
+              - Origin
+              - Access-Control-Request-Method
+              - Access-Control-Request-Headers
+          ViewerProtocolPolicy: allow-all
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: 'true'
+
+  UniqueIdFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-UniqueId
+      Description: Generates a stack-specific unique ID to use for bucket naming and other purposes
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          var response = require('cfn-response');
+
+          exports.handler = (event, context) => {
+            console.log('REQUEST:: ', JSON.stringify(event, null, 2));
+            var responseData = {
+              ID: Math.random().toString(36).substring(7) + new Date().getTime().toString(36)
+            };
+            console.log("responseData: ", responseData);
+            response.send(event, context, response.SUCCESS, responseData);
+          };
+
+      Runtime:  nodejs8.10
+      Timeout: 30
+
+  UniqueId:
+    Type: "Custom::LoadLambda"
+    Properties:
+      ServiceToken: !GetAtt UniqueIdFunction.Arn
+      Resource: "EndPoint"
+
+  LowerCaseStackNameFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-LowerCaseStack
+      Description: Outputs the stack name converted to lowercase, use for bucket naming and misc
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          var response = require('cfn-response');
+
+          exports.handler = (event, context) => {
+            console.log('REQUEST:: ', JSON.stringify(event, null, 2));
+            var responseData = {name:process.env.STACK_NAME.toLowerCase()};
+            console.log("responseData: ", responseData);
+            response.send(event, context, response.SUCCESS, responseData);
+          };
+      Environment:
+        Variables:
+          STACK_NAME: !Sub ${AWS::StackName}
+      Runtime:  nodejs8.10
+      Timeout: 30
+
+  LowerCaseStackName:
+    Type: "Custom::LoadLambda"
+    Properties:
+      ServiceToken: !GetAtt LowerCaseStackNameFunction.Arn
+      Resource: "EndPoint"
+
+Outputs:
+  RtmpDestination:
+    Description: RTMP Destinations
+    Value: !Select [0, !GetAtt  Input.Destinations]
+  ApiEndpoint:
+    Description: URL of the API entry point, use to call API functions
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/urbanstarburst"
+  LiveCdnHost:
+    Description: The DNSName of the live CF Distribution, use to create live playback URLs
+    Value: !GetAtt LiveCDN.DomainName
+  VodCdnHost:
+    Description: The DNSName of the VOD CF Distribution, use to create VOD playback URLs
+    Value: !GetAtt VodCDN.DomainName
