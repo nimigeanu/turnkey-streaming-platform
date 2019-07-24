@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+table {
+  font-family: arial, sans-serif;
+  border-collapse: collapse;
+}
+
+td, th {
+  border: 1px solid #dddddd;
+  text-align: left;
+  padding: 8px;
+}
+
+tr:nth-child(even) {
+  background-color: #dddddd;
+}
+</style>
+<link href="https://vjs.zencdn.net/7.4.1/video-js.css" rel="stylesheet">
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+<script>
+
+var apiEndpoint = 'xxxxxxxxxx.execute-api.us-east-1.amazonaws.com';
+var livePlaybackEndpoint = 'xxxxxxxxxxxxxx.cloudfront.net';
+var vodPlaybackEndpoint = 'xxxxxxxxxxxxxx.cloudfront.net'
+
+$(document).ready(function(){
+  $("#startButton").click(function(){
+    var metadata = encodeURI($("#metadatainput").val());
+    $.ajax({url: `https://${apiEndpoint}/api/events/start?metadata=${metadata}`, success: function(result){
+      console.log("result: ", result.State)
+      $("#result1").text("State: " + result.State);
+      getEvents();
+    }});
+  });
+
+  $("#stopButton").click(function(){
+    $.ajax({url: `https://${apiEndpoint}/api/events/stop`, success: function(result){
+      $("#result1").text("State: " + result.State);
+    }});
+  });
+
+  getEvents = function(){
+    $.ajax({url: `https://${apiEndpoint}/api/events`, success: function(result){
+      console.log("result: ", result)
+      let html = "<table><tr><th>ID</th><th>Time</th><th>Status</th><th>Meta Data</th><th></th><th></th></tr>"
+      for (var i = 0; i < result.Items.length; i++){
+        var item = result.Items[i];
+        var status = item.TranscodeStatus;
+        var playText = ""
+        var deleteText = ""
+        if (status == "complete"){
+          playText = `<a href="javascript:playVod(${item.ID})">play<a>`;
+          deleteText = `<a href="javascript:deleteVod(${item.ID})">delete<a>`;
+        }
+        html +=`<tr><td>${item.ID}</td><td>${item.Time}</td><td>${status}</td><td>${item.metadata}</td><td>${playText}</td><td>${deleteText}</td></tr>`
+      }
+      html += "</table>";
+      $("#eventsTable").html(html);
+    }});
+  };
+  playVod = function(id){
+    videojs("video1").src(`https://${vodPlaybackEndpoint}/A/event_${id}.m3u8`);
+    videojs("video1").play();
+  }
+  deleteVod = function(id){
+    $.ajax({
+      url: `https://${apiEndpoint}/api/events/${id}`,
+      type: 'DELETE',
+      success: function(result) {
+          getEvents();
+      }
+    });
+  }
+  $("#getEventsButton").click(getEvents);
+  getEvents();
+  $("#playLive").click(function(){
+    videojs("video1").src(`https://${livePlaybackEndpoint}/A.m3u8`);
+    videojs("video1").play();
+  })
+});
+</script>
+</head>
+<body>
+
+<button id="startButton">Start Event</button>
+<br>Meta Data:<br>
+<input type="text" id="metadatainput" value='{name:"Test",description:"Description1"}'><br>
+
+<p>
+<button id="stopButton">Stop Event</button>
+<div id="result1"></div>
+
+<p>
+<p>
+Events 
+<button id="getEventsButton">Refresh list</button>
+<p>
+<div id="eventsTable"></div>
+<p>
+Player 
+<button id="playLive">Play Live Feed</button>
+<video id='video1' class='video-js' controls width='640' height='264' data-setup='{}'>
+</video>
+
+
+<script src='https://vjs.zencdn.net/7.4.1/video.js'></script>
+
+</body>
+</html>
