@@ -252,7 +252,7 @@ Resources:
             });
           };
 
-      Runtime:  nodejs8.10
+      Runtime:  nodejs12.x
       Timeout: 180
 
   MediaConvertEndPoint:
@@ -420,7 +420,7 @@ Resources:
                 }
                 return data;
             };
-      Runtime:  nodejs8.10
+      Runtime:  nodejs12.x
       Timeout: 180
 
   MediaConvertJobTemplate:
@@ -840,7 +840,7 @@ Resources:
         Variables:
           MEDIALIVE_CHANNEL_ID: !Select [6, !Split [":", !GetAtt Channel.Arn]]
           DYNAMODB_EVENTS_TABLE : !Sub ${AWS::StackName}-Events
-      Runtime:  nodejs8.10
+      Runtime:  nodejs12.x
       Timeout: 180
 
   GetEventsFunction:
@@ -873,7 +873,7 @@ Resources:
       Environment:
         Variables:
           DYNAMODB_EVENTS_TABLE : !Sub ${AWS::StackName}-Events
-      Runtime:  nodejs8.10
+      Runtime:  nodejs12.x
       Timeout: 180
 
   NewRecordingFunction:
@@ -893,7 +893,7 @@ Resources:
           MEDIA_CONVERT_ENDPOINT: !GetAtt MediaConvertEndPoint.EndpointUrl
           MEDIA_CONVERT_ROLE_ARN: !GetAtt MediaConvertRole.Arn
           OUTPUT_LOCATION: !Sub ${LowerCaseStackName.name}-storagebucket-${UniqueId.ID}/hls
-      Runtime:  nodejs8.10
+      Runtime:  nodejs12.x
       Timeout: 180
 
   FinishedTranscodingFunction:
@@ -970,7 +970,7 @@ Resources:
       Environment:
         Variables:
           DYNAMODB_EVENTS_TABLE : !Sub ${AWS::StackName}-Events
-      Runtime:  nodejs8.10
+      Runtime:  nodejs12.x
       Timeout: 180
 
   DeleteEventFunction:
@@ -1056,7 +1056,7 @@ Resources:
         Variables:
           DYNAMODB_EVENTS_TABLE : !Sub ${AWS::StackName}-Events
           S3_BUCKET: !Sub ${LowerCaseStackName.name}-storagebucket-${UniqueId.ID}
-      Runtime:  nodejs8.10
+      Runtime:  nodejs12.x
       Timeout: 180
 
   LambdaApiGatewayInvoke1:
@@ -1366,7 +1366,7 @@ Resources:
             response.send(event, context, response.SUCCESS, responseData);
           };
 
-      Runtime:  nodejs8.10
+      Runtime:  nodejs12.x
       Timeout: 30
 
   UniqueId:
@@ -1395,7 +1395,7 @@ Resources:
       Environment:
         Variables:
           STACK_NAME: !Sub ${AWS::StackName}
-      Runtime:  nodejs8.10
+      Runtime:  nodejs12.x
       Timeout: 30
 
   LowerCaseStackName:
